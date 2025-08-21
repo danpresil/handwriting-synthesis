@@ -12,7 +12,7 @@ from dataset import HandwritingDataset, handwriting_collate_fn
 from rnn_cell import LSTMAttentionCell
 from rnn_ops import rnn_free_run
 from tf_base_model import TFBaseModel
-from tf_utils import time_distributed_dense_layer
+from torch_utils import time_distributed_dense_layer
 
 
 class DataLoaders(object):
@@ -176,7 +176,7 @@ class rnn(TFBaseModel):
             initial_state=self.initial_state,
             scope='rnn'
         )
-        params = time_distributed_dense_layer(outputs, self.output_units, scope='rnn/gmm')
+        params = time_distributed_dense_layer(outputs, self.output_units)
         pis, mus, sigmas, rhos, es = self.parse_parameters(params)
         sequence_loss, self.loss = self.NLL(self.y, self.x_len, pis, mus, sigmas, rhos, es)
 
