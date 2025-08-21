@@ -4,69 +4,51 @@ import os
 import numpy as np
 import tensorflow as tf
 
+import torch
+from torch.utils.data import DataLoader, random_split
+
 import drawing
-from data_frame import DataFrame
+from dataset import HandwritingDataset, handwriting_collate_fn
 from rnn_cell import LSTMAttentionCell
 from rnn_ops import rnn_free_run
 from tf_base_model import TFBaseModel
 from tf_utils import time_distributed_dense_layer
 
 
-class DataReader(object):
+class DataLoaders(object):
 
-    def __init__(self, data_dir):
-        data_cols = ['x', 'x_len', 'c', 'c_len']
-        data = [np.load(os.path.join(data_dir, '{}.npy'.format(i))) for i in data_cols]
+    def __init__(self, train_dataset, val_dataset, test_dataset):
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.test_dataset = test_dataset
 
-        self.test_df = DataFrame(columns=data_cols, data=data)
-        self.train_df, self.val_df = self.test_df.train_test_split(train_size=0.95, random_state=2018)
-
-        print('train size', len(self.train_df))
-        print('val size', len(self.val_df))
-        print('test size', len(self.test_df))
-
-    def train_batch_generator(self, batch_size):
-        return self.batch_generator(
-            batch_size=batch_size,
-            df=self.train_df,
-            shuffle=True,
-            num_epochs=10000,
-            mode='train'
-        )
-
-    def val_batch_generator(self, batch_size):
-        return self.batch_generator(
-            batch_size=batch_size,
-            df=self.val_df,
-            shuffle=True,
-            num_epochs=10000,
-            mode='val'
-        )
-
-    def test_batch_generator(self, batch_size):
-        return self.batch_generator(
-            batch_size=batch_size,
-            df=self.test_df,
-            shuffle=False,
-            num_epochs=1,
-            mode='test'
-        )
-
-    def batch_generator(self, batch_size, df, shuffle=True, num_epochs=10000, mode='train'):
-        gen = df.batch_generator(
+    def _generator(self, dataset, batch_size, shuffle=True, infinite=True):
+        loader = DataLoader(
+            dataset,
             batch_size=batch_size,
             shuffle=shuffle,
-            num_epochs=num_epochs,
-            allow_smaller_final_batch=(mode == 'test')
+            collate_fn=handwriting_collate_fn,
         )
-        for batch in gen:
-            batch['x_len'] = batch['x_len'] - 1
-            max_x_len = np.max(batch['x_len'])
-            max_c_len = np.max(batch['c_len'])
-            batch['y'] = batch['x'][:, 1:max_x_len + 1, :]
-            batch['x'] = batch['x'][:, :max_x_len, :]
-            batch['c'] = batch['c'][:, :max_c_len]
-            yield batch
+        while True:
+            for x, y, x_len, c, c_len in loader:
+                yield {
+                    'x': x.numpy(),
+                    'y': y.numpy(),
+                    'x_len': x_len.numpy(),
+                    'c': c.numpy(),
+                    'c_len': c_len.numpy(),
+                }
+            if not infinite:
+                break
+
+    def train_batch_generator(self, batch_size):
+        return self._generator(self.train_dataset, batch_size, shuffle=True, infinite=True)
+
+    def val_batch_generator(self, batch_size):
+        return self._generator(self.val_dataset, batch_size, shuffle=True, infinite=True)
+
+    def test_batch_generator(self, batch_size):
+        return self._generator(self.test_dataset, batch_size, shuffle=False, infinite=False)
 
 
 class rnn(TFBaseModel):
@@ -207,10 +189,21 @@ class rnn(TFBaseModel):
 
 
 if __name__ == '__main__':
-    dr = DataReader(data_dir='data/processed/')
+    dataset = HandwritingDataset(data_dir='data/processed/')
+    total_len = len(dataset)
+    train_size = int(0.95 * total_len)
+    val_size = total_len - train_size
+    gen = torch.Generator().manual_seed(2018)
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=gen)
+
+    print('train size', len(train_dataset))
+    print('val size', len(val_dataset))
+    print('test size', len(dataset))
+
+    loaders = DataLoaders(train_dataset, val_dataset, dataset)
 
     nn = rnn(
-        reader=dr,
+        reader=loaders,
         log_dir='logs',
         checkpoint_dir='checkpoints',
         prediction_dir='predictions',
