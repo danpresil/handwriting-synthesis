@@ -6,6 +6,8 @@ from torch import nn
 import torch.nn.functional as F
 from torch.distributions import MultivariateNormal, Bernoulli, Categorical
 
+from pytorch_rnn_ops import rnn_free_run
+
 
 @dataclass
 class LSTMAttentionCellState:
@@ -173,6 +175,31 @@ class LSTMAttentionCell(nn.Module):
         es = output[:, 2].long()
         is_eos = es == 1
         return torch.logical_or(final_char & is_eos, past_final_char)
+
+    def free_run(
+        self,
+        initial_state: LSTMAttentionCellState,
+        initial_input: torch.Tensor,
+        max_steps: int,
+    ) -> Tuple[torch.Tensor, LSTMAttentionCellState]:
+        """Generate a sequence by feeding predictions back into the cell.
+
+        Args:
+            initial_state: Starting state for the RNN cell.
+            initial_input: First input fed to the cell of shape ``[B, F]``.
+            max_steps: Maximum number of steps to unroll.
+
+        Returns:
+            A tuple ``(outputs, final_state)`` where ``outputs`` has shape
+            ``[T, B, F]``.
+        """
+
+        return rnn_free_run(
+            cell=self,
+            initial_state=initial_state,
+            initial_input=initial_input,
+            max_steps=max_steps,
+        )
 
     def _parse_parameters(self, gmm_params: torch.Tensor, eps: float = 1e-8, sigma_eps: float = 1e-4):
         splits = [
