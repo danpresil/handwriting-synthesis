@@ -6,6 +6,23 @@ import numpy as np
 from scipy.signal import savgol_filter
 from scipy.interpolate import interp1d
 
+try:  # Optional dependency used when model outputs are PyTorch tensors
+    import torch
+except Exception:  # pragma: no cover - torch not installed
+    torch = None
+
+
+def _to_numpy(arr):
+    """Convert input to a NumPy array.
+
+    Model sampling functions may return PyTorch tensors.  The drawing utilities
+    operate on NumPy arrays, so this helper converts tensors while leaving other
+    array-like inputs untouched.
+    """
+    if torch is not None and isinstance(arr, torch.Tensor):
+        return arr.detach().cpu().numpy()
+    return np.asarray(arr)
+
 
 alphabet = [
     '\x00', ' ', '!', '"', '#', "'", '(', ')', ',', '-', '.',
@@ -133,7 +150,7 @@ def normalize(offsets):
     """
     normalizes strokes to median unit norm
     """
-    offsets = np.copy(offsets)
+    offsets = _to_numpy(offsets).copy()
     offsets[:, :2] /= np.median(np.linalg.norm(offsets[:, :2], axis=1))
     return offsets
 
@@ -142,6 +159,7 @@ def coords_to_offsets(coords):
     """
     convert from coordinates to offsets
     """
+    coords = _to_numpy(coords)
     offsets = np.concatenate([coords[1:, :2] - coords[:-1, :2], coords[1:, 2:3]], axis=1)
     offsets = np.concatenate([np.array([[0, 0, 1]]), offsets], axis=0)
     return offsets
@@ -151,6 +169,7 @@ def offsets_to_coords(offsets):
     """
     convert from offsets to coordinates
     """
+    offsets = _to_numpy(offsets)
     return np.concatenate([np.cumsum(offsets[:, :2], axis=0), offsets[:, 2:3]], axis=1)
 
 
@@ -162,6 +181,7 @@ def draw(
         interpolation_factor=None,
         save_file=None
 ):
+    offsets = _to_numpy(offsets)
     strokes = offsets_to_coords(offsets)
 
     if denoise_strokes:
