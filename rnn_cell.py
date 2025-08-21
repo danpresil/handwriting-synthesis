@@ -4,7 +4,8 @@ import tensorflow as tf
 import tensorflow.contrib.distributions as tfd
 import numpy as np
 
-from tf_utils import dense_layer, shape
+from torch_utils import dense_layer
+from tf_utils import shape
 
 
 LSTMAttentionCellState = namedtuple(
@@ -82,7 +83,7 @@ class LSTMAttentionCell(tf.nn.rnn_cell.RNNCell):
 
             # attention
             attention_inputs = tf.concat([state.w, inputs, s1_out], axis=1)
-            attention_params = dense_layer(attention_inputs, 3*self.num_attn_mixture_components, scope='attention')
+            attention_params = dense_layer(attention_inputs, 3*self.num_attn_mixture_components)
             alpha, beta, kappa = tf.split(tf.nn.softplus(attention_params), 3, axis=1)
             kappa = state.kappa + kappa / 25.0
             beta = tf.clip_by_value(beta, .01, np.inf)
@@ -126,7 +127,7 @@ class LSTMAttentionCell(tf.nn.rnn_cell.RNNCell):
             return s3_out, new_state
 
     def output_function(self, state):
-        params = dense_layer(state.h3, self.output_units, scope='gmm', reuse=tf.AUTO_REUSE)
+        params = dense_layer(state.h3, self.output_units)
         pis, mus, sigmas, rhos, es = self._parse_parameters(params)
         mu1, mu2 = tf.split(mus, 2, axis=1)
         mus = tf.stack([mu1, mu2], axis=2)
