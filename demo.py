@@ -3,40 +3,31 @@ import logging
 
 import numpy as np
 import svgwrite
+import torch
 
 import drawing
 import lyrics
-from rnn import rnn
+from model import HandwritingModel
 
 
 class Hand(object):
 
     def __init__(self):
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-        self.nn = rnn(
-            log_dir='logs',
-            checkpoint_dir='checkpoints',
-            prediction_dir='predictions',
-            learning_rates=[.0001, .00005, .00002],
-            batch_sizes=[32, 64, 64],
-            patiences=[1500, 1000, 500],
-            beta1_decays=[.9, .9, .9],
-            validation_batch_size=32,
-            optimizer='rms',
-            num_training_steps=100000,
-            warm_start_init_step=17900,
-            regularization_constant=0.0,
-            keep_prob=1.0,
-            enable_parameter_averaging=False,
-            min_steps_to_checkpoint=2000,
-            log_interval=20,
-            logging_level=logging.CRITICAL,
-            grad_clip=10,
+        """Initialise the handwriting model using the PyTorch implementation."""
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = HandwritingModel(
             lstm_size=400,
             output_mixture_components=20,
-            attention_mixture_components=10
+            attention_mixture_components=10,
         )
-        self.nn.restore()
+        checkpoint_path = os.path.join('checkpoints', 'model.pt')
+        if os.path.exists(checkpoint_path):
+            state = torch.load(checkpoint_path, map_location=self.device)
+            if isinstance(state, dict) and 'model_state' in state:
+                state = state['model_state']
+            self.model.load_state_dict(state)
+        self.model.to(self.device)
+        self.model.eval()
 
     def write(self, filename, lines, biases=None, styles=None, stroke_colors=None, stroke_widths=None):
         valid_char_set = set(drawing.alphabet)
@@ -63,48 +54,43 @@ class Hand(object):
 
     def _sample(self, lines, biases=None, styles=None):
         num_samples = len(lines)
-        max_tsteps = 40*max([len(i) for i in lines])
-        biases = biases if biases is not None else [0.5]*num_samples
+        max_tsteps = 40 * max(len(i) for i in lines)
+        biases = biases if biases is not None else [0.5] * num_samples
 
-        x_prime = np.zeros([num_samples, 1200, 3])
-        x_prime_len = np.zeros([num_samples])
-        chars = np.zeros([num_samples, 120])
-        chars_len = np.zeros([num_samples])
-
-        if styles is not None:
-            for i, (cs, style) in enumerate(zip(lines, styles)):
-                x_p = np.load('styles/style-{}-strokes.npy'.format(style))
-                c_p = np.load('styles/style-{}-chars.npy'.format(style)).tostring().decode('utf-8')
-
-                c_p = str(c_p) + " " + cs
-                c_p = drawing.encode_ascii(c_p)
-                c_p = np.array(c_p)
-
-                x_prime[i, :len(x_p), :] = x_p
-                x_prime_len[i] = len(x_p)
-                chars[i, :len(c_p)] = c_p
-                chars_len[i] = len(c_p)
-
-        else:
-            for i in range(num_samples):
-                encoded = drawing.encode_ascii(lines[i])
-                chars[i, :len(encoded)] = encoded
-                chars_len[i] = len(encoded)
-
-        [samples] = self.nn.session.run(
-            [self.nn.sampled_sequence],
-            feed_dict={
-                self.nn.prime: styles is not None,
-                self.nn.x_prime: x_prime,
-                self.nn.x_prime_len: x_prime_len,
-                self.nn.num_samples: num_samples,
-                self.nn.sample_tsteps: max_tsteps,
-                self.nn.c: chars,
-                self.nn.c_len: chars_len,
-                self.nn.bias: biases
-            }
-        )
-        samples = [sample[~np.all(sample == 0.0, axis=1)] for sample in samples]
+        samples = []
+        for idx, line in enumerate(lines):
+            bias = torch.tensor([biases[idx]], dtype=torch.float32, device=self.device)
+            if styles is not None:
+                style = styles[idx]
+                x_p = np.load(f'styles/style-{style}-strokes.npy')
+                c_p = np.load(f'styles/style-{style}-chars.npy').tostring().decode('utf-8')
+                c_seq = drawing.encode_ascii(str(c_p) + ' ' + line)
+                x_prime = torch.from_numpy(x_p).float().unsqueeze(0).to(self.device)
+                x_prime_len = torch.tensor([len(x_p)], dtype=torch.long, device=self.device)
+                c = torch.tensor(c_seq, dtype=torch.long, device=self.device).unsqueeze(0)
+                c_len = torch.tensor([len(c_seq)], dtype=torch.long, device=self.device)
+                with torch.no_grad():
+                    sample = self.model.primed_sample(
+                        x_prime,
+                        x_prime_len,
+                        c,
+                        c_len,
+                        bias,
+                        max_tsteps,
+                    )
+            else:
+                c_seq = drawing.encode_ascii(line)
+                c = torch.tensor(c_seq, dtype=torch.long, device=self.device).unsqueeze(0)
+                c_len = torch.tensor([len(c_seq)], dtype=torch.long, device=self.device)
+                with torch.no_grad():
+                    sample = self.model.sample(
+                        c,
+                        c_len,
+                        bias,
+                        max_tsteps,
+                    )
+            sample = sample[:, 0, :].detach().cpu().numpy()
+            samples.append(sample)
         return samples
 
     def _draw(self, strokes, lines, filename, stroke_colors=None, stroke_widths=None):
